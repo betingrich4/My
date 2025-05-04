@@ -13,31 +13,85 @@ const currentUserDisplay = document.getElementById('currentUser');
 const chatMessages = document.getElementById('chatMessages');
 const messageInput = document.getElementById('messageInput');
 const sendButton = document.getElementById('sendButton');
+const themeToggle = document.getElementById('themeToggle');
+
+// API Configuration
+const API_BASE_URL = 'http://localhost:5000/api'; // Update with your backend URL
 
 // App State
 let isLoginMode = true;
 let currentUser = null;
-let users = JSON.parse(localStorage.getItem('users')) || [];
-let messages = JSON.parse(localStorage.getItem('messages')) || [];
+let currentTheme = 'light';
 
 // Initialize the app
-function init() {
+async function init() {
     updateAuthUI();
-    loadMessages();
+    checkSavedTheme();
     
-    // Check if user is already logged in (for demo purposes)
-    const loggedInUser = localStorage.getItem('currentUser');
-    if (loggedInUser) {
-        currentUser = JSON.parse(loggedInUser);
-        showChat();
+    // Check if token exists (user logged in)
+    const token = localStorage.getItem('token');
+    if (token) {
+        try {
+            await fetchUserData(token);
+            await loadMessages();
+            showChat();
+        } catch (err) {
+            console.error('Authentication error:', err);
+            localStorage.removeItem('token');
+        }
     }
 }
 
-// Toggle between login and signup
-toggleAuth.addEventListener('click', () => {
-    isLoginMode = !isLoginMode;
-    updateAuthUI();
-});
+// Check saved theme from localStorage
+function checkSavedTheme() {
+    const savedTheme = localStorage.getItem('theme') || 'light';
+    setTheme(savedTheme);
+}
+
+// Set theme
+function setTheme(theme) {
+    currentTheme = theme;
+    document.body.className = `${theme}-theme`;
+    localStorage.setItem('theme', theme);
+    
+    // Update toggle button
+    if (themeToggle) {
+        themeToggle.textContent = theme === 'light' ? '🌙' : '☀️';
+    }
+}
+
+// Toggle theme
+function toggleTheme() {
+    const newTheme = currentTheme === 'light' ? 'dark' : 'light';
+    setTheme(newTheme);
+    
+    // Update user preference in backend
+    if (currentUser) {
+        fetch(`${API_BASE_URL}/user/theme`, {
+            method: 'PUT',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+            },
+            body: JSON.stringify({ theme: newTheme })
+        }).catch(err => console.error('Failed to update theme:', err));
+    }
+}
+
+// Fetch user data with token
+async function fetchUserData(token) {
+    const response = await fetch(`${API_BASE_URL}/user`, {
+        headers: {
+            'Authorization': `Bearer ${token}`
+        }
+    });
+    
+    if (!response.ok) throw new Error('Failed to fetch user data');
+    
+    const data = await response.json();
+    currentUser = data.user;
+    setTheme(data.user.theme || 'light');
+}
 
 // Update the auth UI based on mode
 function updateAuthUI() {
@@ -53,7 +107,7 @@ function updateAuthUI() {
 }
 
 // Handle authentication
-authButton.addEventListener('click', () => {
+authButton.addEventListener('click', async () => {
     const username = usernameInput.value.trim();
     const phoneNumber = phoneNumberInput.value.trim();
     const password = passwordInput.value.trim();
@@ -69,43 +123,33 @@ authButton.addEventListener('click', () => {
         return;
     }
 
-    if (isLoginMode) {
-        // Login logic
-        const user = users.find(u => 
-            (u.username === username || u.phoneNumber === phoneNumber) && 
-            u.password === password
-        );
+    try {
+        const endpoint = isLoginMode ? '/login' : '/register';
+        const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                username,
+                phoneNumber,
+                password
+            })
+        });
 
-        if (user) {
-            currentUser = user;
-            localStorage.setItem('currentUser', JSON.stringify(user));
-            showChat();
-        } else {
-            alert('Invalid credentials');
-        }
-    } else {
-        // Signup logic
-        const userExists = users.some(u => 
-            u.username === username || u.phoneNumber === phoneNumber
-        );
-
-        if (userExists) {
-            alert('Username or phone number already exists');
-            return;
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.message || 'Authentication failed');
         }
 
-        const newUser = {
-            username,
-            phoneNumber,
-            password
-        };
-
-        users.push(newUser);
-        localStorage.setItem('users', JSON.stringify(users));
-        
-        currentUser = newUser;
-        localStorage.setItem('currentUser', JSON.stringify(newUser));
+        const data = await response.json();
+        localStorage.setItem('token', data.token);
+        currentUser = data.user;
+        setTheme(data.user.theme || 'light');
+        await loadMessages();
         showChat();
+    } catch (err) {
+        alert(err.message);
     }
 });
 
@@ -114,14 +158,37 @@ function showChat() {
     authContainer.style.display = 'none';
     chatContainer.style.display = 'flex';
     currentUserDisplay.textContent = `Logged in as ${currentUser.username}`;
+    
+    // Add theme toggle if not exists
+    if (!themeToggle) {
+        const toggleBtn = document.createElement('button');
+        toggleBtn.id = 'themeToggle';
+        toggleBtn.className = 'theme-toggle';
+        toggleBtn.textContent = currentTheme === 'light' ? '🌙' : '☀️';
+        toggleBtn.onclick = toggleTheme;
+        chatHeader.appendChild(toggleBtn);
+    }
 }
 
-// Load messages
-function loadMessages() {
-    chatMessages.innerHTML = '';
-    messages.forEach(msg => {
-        addMessageToChat(msg);
-    });
+// Load messages from server
+async function loadMessages() {
+    try {
+        const response = await fetch(`${API_BASE_URL}/messages`, {
+            headers: {
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+            }
+        });
+        
+        if (!response.ok) throw new Error('Failed to load messages');
+        
+        const messages = await response.json();
+        chatMessages.innerHTML = '';
+        messages.forEach(msg => {
+            addMessageToChat(msg);
+        });
+    } catch (err) {
+        console.error('Error loading messages:', err);
+    }
 }
 
 // Add a message to the chat
@@ -135,7 +202,8 @@ function addMessageToChat(message) {
     
     const messageInfo = document.createElement('div');
     messageInfo.classList.add('message-info');
-    messageInfo.textContent = `${message.sender} • ${message.time}`;
+    const time = new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    messageInfo.textContent = `${message.sender} • ${time}`;
     
     messageDiv.appendChild(messageContent);
     messageDiv.appendChild(messageInfo);
@@ -146,29 +214,48 @@ function addMessageToChat(message) {
 }
 
 // Send a message
-function sendMessage() {
+async function sendMessage() {
     const text = messageInput.value.trim();
     if (!text) return;
 
-    const newMessage = {
-        sender: currentUser.username,
-        text,
-        time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    };
+    try {
+        // For demo, we'll send to a hardcoded user - in real app you'd select a recipient
+        const receiver = 'other_user'; // Replace with actual recipient selection
+        
+        const response = await fetch(`${API_BASE_URL}/messages`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${localStorage.getItem('token')}`
+            },
+            body: JSON.stringify({
+                receiver,
+                text
+            })
+        });
 
-    messages.push(newMessage);
-    localStorage.setItem('messages', JSON.stringify(messages));
-    
-    addMessageToChat(newMessage);
-    messageInput.value = '';
+        if (!response.ok) throw new Error('Failed to send message');
+
+        const newMessage = await response.json();
+        addMessageToChat(newMessage);
+        messageInput.value = '';
+    } catch (err) {
+        console.error('Error sending message:', err);
+        alert('Failed to send message');
+    }
 }
 
-// Event listeners for sending messages
+// Event listeners
 sendButton.addEventListener('click', sendMessage);
 messageInput.addEventListener('keypress', (e) => {
     if (e.key === 'Enter') {
         sendMessage();
     }
+});
+
+toggleAuth.addEventListener('click', () => {
+    isLoginMode = !isLoginMode;
+    updateAuthUI();
 });
 
 // Initialize the app
